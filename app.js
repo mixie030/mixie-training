@@ -19,6 +19,8 @@
     userMedia: {}, // ejercicio -> enlace propio a un vídeo
     active: null,  // sesión en curso
     dismissed: {}, // avisos cerrados
+    pendingBackup: false, // hay registros nuevos sin copia en iCloud
+    lastBackup: null,
   });
 
   let S = load();
@@ -358,6 +360,12 @@
       </header>
       ${isTravel(k) ? '<div class="pill travel">Modo viaje · Argentina</div>' : ''}
       ${resume}
+      ${S.pendingBackup && !S.active ? `<section class="card backup">
+        <span class="eyebrow">Guarda tu progreso</span>
+        <p>Envía la copia a iCloud: así queda a salvo y Claude puede seguir tu progreso.</p>
+        <button class="btn primary" data-action="export">Guardar copia en iCloud</button>
+        <p class="hint">${S.lastBackup ? 'Compartir → Guardar en Archivos → iCloud Drive → carpeta «Mixie».' : 'La primera vez: Compartir → <b>Guardar en Archivos</b> → iCloud Drive → crea la carpeta <b>«Mixie»</b> → Guardar. Después recordará la carpeta.'}</p>
+      </section>` : ''}
       <section class="card today ${e.kind || ''}">
         <span class="eyebrow">Hoy · ${isOptional(k) ? 'Opcional' : esc(KIND_LABEL[e.kind] || '')}</span>
         <h2>${esc(e.name)}</h2>
@@ -587,8 +595,8 @@
         </div>
       </section>
       <section class="card"><span class="eyebrow">Copia de seguridad</span>
-        <p class="muted">Tus datos solo están en este móvil. Haz una copia de vez en cuando (por ejemplo, a Archivos o iCloud Drive). Tus vídeos y fotos de ejercicios no entran en la copia: guárdalos también en Fotos.</p>
-        <div class="row"><button class="btn ghost" data-action="export">Exportar copia</button><label class="btn ghost file">Importar<input type="file" accept="application/json,.json" data-input="import" hidden></label></div>
+        <p class="muted">Guarda la copia en iCloud Drive → carpeta «Mixie». Así tus datos están a salvo y Claude puede ver tu progreso desde el Mac. ${S.lastBackup ? `Última copia: ${fmtShort(S.lastBackup.slice(0, 10))}.` : 'Aún no has hecho ninguna copia.'} Tus vídeos y fotos de ejercicios no entran en la copia: guárdalos también en Fotos.</p>
+        <div class="row"><button class="btn ghost" data-action="export">Guardar copia en iCloud</button><label class="btn ghost file">Importar<input type="file" accept="application/json,.json" data-input="import" hidden></label></div>
       </section>
       <section class="card"><span class="eyebrow">Demostraciones</span>
         <p class="muted">${esc(D.MEDIA_CREDITS || 'Las demostraciones se irán añadiendo cuando estén revisadas.')}</p></section>
@@ -816,6 +824,7 @@
       steps: a.steps.map((s) => ({ ex: s.ex, status: s.status, sets: s.sets, setsDone: s.setsDone, weights: s.weights, feels: s.feels || [], minutesDone: s.minutesDone, round: s.round })),
     });
     S.active = null;
+    S.pendingBackup = true;
     save();
     keepAwake(false);
     location.hash = '#/hoy';
@@ -1026,6 +1035,7 @@
     'log-skate': (el) => openSheet(quickLogSheet('skate', el.dataset.k)),
     'log-shoot': (el) => {
       S.logs.push({ id: uid(), type: 'shoot', date: el.dataset.k });
+      S.pendingBackup = true;
       save(); render(); toast('Hoy toca descansar. Bien.');
     },
     'save-quick': (el) => {
@@ -1034,6 +1044,7 @@
       const minutes = Number(custom || preset || 0);
       if (el.dataset.type === 'walk' && !minutes) return toast('Indica los minutos');
       S.logs.push({ id: uid(), type: el.dataset.type, date: el.dataset.k, minutes, notes: document.getElementById('quick-note').value.trim() });
+      S.pendingBackup = true;
       save(); closeSheet(); render(); toast('Registrado');
     },
     'del-log': (el) => {
@@ -1046,6 +1057,7 @@
       const c = {};
       for (const [k, v] of f.entries()) if (String(v).trim()) c[k] = String(v).trim();
       S.checkins[todayKey()] = c;
+      S.pendingBackup = true;
       save(); closeSheet(); render(); toast('Guardado');
     },
     export: exportData,
@@ -1055,20 +1067,31 @@
     },
   };
 
+  function backupDone() {
+    S.pendingBackup = false;
+    S.lastBackup = new Date().toISOString();
+    save(); render();
+  }
   async function exportData() {
-    const json = JSON.stringify(S, null, 2);
-    const name = `mixie-copia-${todayKey()}.json`;
+    const data = Object.assign({}, S, { active: null, exportedAt: new Date().toISOString() });
+    const json = JSON.stringify(data, null, 2);
+    const d = new Date();
+    const name = `mixie-datos-${todayKey()}-${pad(d.getHours())}${pad(d.getMinutes())}.json`;
     try {
-      const file = new File([json], name, { type: 'application/json' });
-      if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        await navigator.share({ files: [file], title: 'Copia de Mixie Training' });
-        return;
+      for (const type of ['application/json', 'text/plain']) {
+        const file = new File([json], name, { type });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: 'Copia de Mixie Training' });
+          backupDone(); toast('Copia guardada');
+          return;
+        }
       }
     } catch (e) { if (e.name === 'AbortError') return; }
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
     a.download = name;
     a.click();
+    backupDone();
   }
   async function importData(file) {
     try {
